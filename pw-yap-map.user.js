@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PW Yap Map (community)
 // @namespace    local
-// @version      1.0
+// @version      1.2
 // @description  Community-marked "yapping" regions on the PW player seek bar
 // @match        *://*.pw.live/*
 // @grant        GM_xmlhttpRequest
@@ -27,6 +27,9 @@
   const REFRESH_MS = 3 * 60 * 1000;
   const SYNC_DELAY_MS = 3000;
   const MAX_TRANSFORMS = 400;  // Firestore limit is 500 per commit
+  const HIDE_MS = 5000;        // panel fades out after this long with no hover/use
+  const DISMISS_COOLDOWN_MS = 15000; // after pressing the red x, panel can return only after this long (and on hover)
+  const KEEP_VISIBLE_WHILE_MARKING = true; // don't hide while a mark is open (so you don't forget to end it)
 
   const DB = `projects/${CFG.projectId}/databases/(default)/documents`;
   const BASE = `https://firestore.googleapis.com/v1/${DB}`;
@@ -44,6 +47,10 @@
   let syncing = false;
   let pendingSync = false;
   let panel = null;
+  let hideTimer = null;
+  let panelHovered = false;
+  let dismissed = false;
+  let dismissedAt = 0;
 
   const getVideo = () => document.querySelector('video');
   const getHolder = () => document.querySelector('.vjs-progress-holder');
@@ -221,10 +228,70 @@
   }
 
   // ---------- panel ----------
-  function setStatus(msg) {
+  function setStatus(msg, reveal = false) {
     const el = panel && panel.querySelector('.pwy-status');
     if (el) el.textContent = msg;
+    if (reveal) showPanel(); // used for errors the user must not miss
   }
+
+  // ---- auto-hide: fade out after HIDE_MS of no hover/use ----
+  function armHide() {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(hidePanel, HIDE_MS);
+  }
+
+  // Fully hide the panel (also used when it is re-created while dismissed)
+  function hideNow() {
+    if (!panel) return;
+    clearTimeout(hideTimer);
+    panel.style.opacity = '0';
+    panel.style.pointerEvents = 'none';
+  }
+
+  // Red x: remove the UI until DISMISS_COOLDOWN_MS has passed AND the pointer hovers its corner
+  function dismissPanel() {
+    dismissed = true;
+    dismissedAt = Date.now();
+    panelHovered = false;
+    hideNow();
+  }
+
+  function showPanel() {
+    if (!panel || dismissed) return;
+    panel.style.opacity = '1';
+    panel.style.pointerEvents = 'auto';
+    armHide();
+  }
+
+  function hidePanel() {
+    if (!panel) return;
+    if (panelHovered || (KEEP_VISIBLE_WHILE_MARKING && markStart !== null)) return armHide();
+    panel.style.opacity = '0';
+    panel.style.pointerEvents = 'none'; // clicks in that corner reach the video again
+  }
+
+  // While hidden the panel can't receive hover events, so check the pointer position ourselves
+  let lastMove = 0;
+  function onPointer(e) {
+    if (!panel || panel.style.pointerEvents !== 'none') return;
+    const now = Date.now();
+    if (now - lastMove < 50) return;
+    lastMove = now;
+    const p = e.touches ? e.touches[0] : e;
+    if (!p) return;
+    const r = panel.getBoundingClientRect();
+    const pad = 8;
+    if (p.clientX >= r.left - pad && p.clientX <= r.right + pad &&
+        p.clientY >= r.top - pad && p.clientY <= r.bottom + pad) {
+      if (dismissed) {
+        if (now - dismissedAt < DISMISS_COOLDOWN_MS) return;
+        dismissed = false;
+      }
+      showPanel();
+    }
+  }
+  document.addEventListener('mousemove', onPointer, true);
+  document.addEventListener('touchstart', onPointer, true);
 
   function updatePanel() {
     if (!panel) return;
@@ -247,17 +314,32 @@
     panel = document.createElement('div');
     panel.style.cssText =
       'position:absolute;top:8px;left:8px;z-index:2147483000;font:12px/1.4 system-ui,sans-serif;' +
-      'color:#fff;background:rgba(0,0,0,.65);padding:6px 8px;border-radius:8px;opacity:.35;' +
-      'transition:opacity .2s;max-width:360px;';
+      'color:#fff;background:rgba(0,0,0,.65);padding:6px 8px;border-radius:8px;opacity:1;' +
+      'transition:opacity .25s;max-width:360px;';
     panel.innerHTML =
-      '<div class="pwy-info"></div>' +
+      '<div class="pwy-head" style="display:flex;align-items:center;justify-content:space-between;gap:10px">' +
+      '<div class="pwy-info"></div></div>' +
       '<div class="pwy-row" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px"></div>' +
       '<div class="pwy-status" style="margin-top:4px;opacity:.85"></div>';
-    panel.onmouseenter = () => (panel.style.opacity = '1');
-    panel.onmouseleave = () => (panel.style.opacity = '.35');
+    panel.onmouseenter = () => {
+      panelHovered = true;
+      showPanel();
+    };
+    panel.onmouseleave = () => {
+      panelHovered = false;
+      armHide();
+    };
     ['click', 'mousedown', 'touchstart', 'dblclick'].forEach((ev) =>
       panel.addEventListener(ev, (e) => e.stopPropagation())
     );
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '\u00D7';
+    closeBtn.title = 'Hide (returns after 15s when you hover this corner)';
+    closeBtn.style.cssText =
+      'flex:none;width:18px;height:18px;padding:0;border:none;border-radius:50%;background:#d93025;' +
+      'color:#fff;font:bold 14px/18px system-ui,sans-serif;text-align:center;cursor:pointer;';
+    closeBtn.onclick = dismissPanel;
+    panel.querySelector('.pwy-head').appendChild(closeBtn);
     const row = panel.querySelector('.pwy-row');
     const btn = (label, cls, fn) => {
       const b = document.createElement('button');
@@ -278,6 +360,9 @@
     btn('Clear mine', 'pwy-clear', clearMine);
     root.appendChild(panel);
     updatePanel();
+    panelHovered = false;
+    if (dismissed) hideNow();
+    else showPanel(); // visible for HIDE_MS on first appearance so people notice it
   }
 
   // ---------- marking ----------
@@ -386,7 +471,7 @@
       await refreshAgg();
     } catch (e) {
       console.warn('[Yap] sync failed', e);
-      setStatus('Save failed, retrying shortly...');
+      setStatus('Save failed, retrying shortly...', true);
       scheduleSync(15000);
     } finally {
       syncing = false;
@@ -421,7 +506,7 @@
     undoStack = [];
     markStart = null;
     render();
-    if (!key) return setStatus('No lecture ID found in the URL.');
+    if (!key) return setStatus('No lecture ID found in the URL.', true);
     try {
       const a = await getAuth();
       const [aggF, voteF] = await Promise.all([fsGet(`lectures/${key}`), fsGet(`lectures/${key}/votes/${a.uid}`)]);
@@ -435,7 +520,7 @@
       setStatus('Ready. Press Y to start/end a yap mark.');
     } catch (e) {
       console.warn('[Yap] load failed', e);
-      setStatus('Could not load (check Firebase config / rules).');
+      setStatus('Could not load (check Firebase config / rules).', true);
     }
   }
 
@@ -469,9 +554,11 @@
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       if (e.key === 'y' || e.key === 'Y') {
         e.preventDefault();
+        showPanel();
         toggleMark();
       } else if (e.key === 'n' || e.key === 'N') {
         e.preventDefault();
+        showPanel();
         skipYap();
       }
     },
