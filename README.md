@@ -22,11 +22,11 @@ This script allows the user to look at a community highlighed part of a lecture 
 
 # Development Status 
 
-Keep in mind that this project is heavily still under testing and development. You may find multiple bugs or errors, please raise them. 
+Keep in mind that this project is heavily still under testing and development. You may find multiple bugs or errors, please raise them in the issues section of this repo.
 
 # Contributing 
 
-As mentioned above since in development phase, contributions are very welcome!
+As mentioned above since in development phase, contributions are very welcome! 
 
 # FAQs 
 
@@ -37,6 +37,10 @@ As this project is entirely community led, so it may mean that people have not y
 2. "Why are my contributions not being shown to other people"
 
 The contributions work on a ratio and percentage basis, if more than 3 people match the region where you contributed, only then will it be shown globally. 
+
+3. "Is this only for one website?"
+
+Yes, as of now this only works for one educational platform as named in the script.
 
 3. "Isse achha OC padh leta?"
 
